@@ -26,7 +26,7 @@ function detectCurrency(text, rate) {
 
   // Match: 50.000đ, 50,000 VND, 50000₫, etc.
   const patterns = [
-    /(\d[\d.,]*)\s*(?:₫|đ|đồng|VND|vnd|dong)/gi,
+    /(\d[\d.,]*)\s*(?:₫|đ|đồng|VND|vnd|dong|d)\b/gi,
     /\b(\d{2,3}(?:[.,]\d{3})+)\b/g, // standalone formatted numbers like 50.000
   ];
 
