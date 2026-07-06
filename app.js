@@ -9,6 +9,7 @@ const state = {
   lastResult: null,
   ocrWorker: null,
   ocrReady: false,
+  videoReady: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -39,33 +40,76 @@ const statusDot = $("#statusDot");
 const rateBadge = $("#rateBadge");
 const inputInterval = $("#inputInterval");
 
+// ── Status display (reuse rateBadge area or create new) ──
+function setStatus(msg) {
+  console.log("[status]", msg);
+  document.title = msg;
+}
+
 // ── Init ──
 async function init() {
   inputInterval.value = state.autoInterval;
   fetchExchangeRate();
-  startCamera();
-  initOCR();
+  await startCamera();
   bindEvents();
+  // Init OCR — show progress in result panel
+  await initOCR();
 }
 
 // ── OCR ──
 async function initOCR() {
+  showResult('<div class="loading-indicator">正在載入 OCR 引擎...<br><span style="font-size:12px;opacity:0.6">首次載入需下載語言包（約 5MB）</span><span class="dots"></span></div>');
+  setStatus("Loading OCR...");
+
   try {
-    showResult('<div class="loading-indicator">載入 OCR 引擎中（首次約 10 秒）<span class="dots"></span></div>');
-    state.ocrWorker = await Tesseract.createWorker("vie+eng");
+    if (typeof Tesseract === "undefined") {
+      throw new Error("Tesseract.js 未能載入，請檢查網路連線");
+    }
+
+    state.ocrWorker = await Tesseract.createWorker("vie+eng", 1, {
+      logger: (m) => {
+        if (m.status === "loading tesseract core") {
+          showResult('<div class="loading-indicator">載入 OCR 核心引擎...<span class="dots"></span></div>');
+        } else if (m.status === "initializing tesseract") {
+          showResult('<div class="loading-indicator">初始化 OCR...<span class="dots"></span></div>');
+        } else if (m.status === "loading language traineddata") {
+          const pct = m.progress ? Math.round(m.progress * 100) : 0;
+          showResult(`<div class="loading-indicator">下載越南語語言包... ${pct}%<span class="dots"></span></div>`);
+        } else if (m.status === "initializing api") {
+          showResult('<div class="loading-indicator">準備就緒...<span class="dots"></span></div>');
+        }
+      },
+    });
+
     state.ocrReady = true;
     statusDot.classList.add("connected");
+    setStatus("VN Translate - Ready");
     closeResult();
-    console.log("[OCR] Ready");
+    console.log("[OCR] Ready - vie+eng");
   } catch (err) {
-    console.error("[OCR] Failed:", err);
-    showResult(`<div class="error-msg">OCR 載入失敗: ${err.message}</div>`);
+    console.error("[OCR] Init failed:", err);
+    setStatus("OCR Failed");
+    showResult(`<div class="error-msg">OCR 引擎載入失敗<br><br>${escapeHtml(err.message)}<br><br><span style="font-size:12px">請重新整理頁面再試</span></div>`);
   }
 }
 
 async function runOCR(imageSource) {
-  if (!state.ocrReady) throw new Error("OCR 引擎載入中，請稍候...");
-  const { data } = await state.ocrWorker.recognize(imageSource);
+  if (!state.ocrReady || !state.ocrWorker) {
+    throw new Error("OCR 引擎尚未就緒，請等待載入完成後再試");
+  }
+
+  // Convert canvas to blob for better compatibility across devices
+  let input = imageSource;
+  if (imageSource instanceof HTMLCanvasElement) {
+    input = await new Promise((resolve, reject) => {
+      imageSource.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("Canvas toBlob failed"))),
+        "image/png"
+      );
+    });
+  }
+
+  const { data } = await state.ocrWorker.recognize(input);
   return data.text;
 }
 
@@ -95,7 +139,25 @@ async function startCamera() {
     video.srcObject = state.stream;
     cameraPlaceholder.style.display = "none";
     video.style.display = "block";
-  } catch {
+
+    // Wait for video to actually be ready
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) {
+        state.videoReady = true;
+        resolve();
+      } else {
+        video.onloadeddata = () => {
+          state.videoReady = true;
+          resolve();
+        };
+      }
+      // Timeout after 5 seconds
+      setTimeout(() => { state.videoReady = true; resolve(); }, 5000);
+    });
+
+    console.log("[Camera] Ready:", video.videoWidth, "x", video.videoHeight);
+  } catch (err) {
+    console.warn("[Camera] Error:", err);
     cameraPlaceholder.style.display = "flex";
     video.style.display = "none";
   }
@@ -113,14 +175,18 @@ function captureForOCR() {
     source = previewImg;
     w = source.naturalWidth;
     h = source.naturalHeight;
-  } else if (state.stream) {
+  } else if (state.stream && state.videoReady) {
     source = video;
     w = video.videoWidth;
     h = video.videoHeight;
   } else {
     return null;
   }
-  if (!w || !h) return null;
+
+  if (!w || !h) {
+    console.warn("[Capture] No dimensions:", w, h);
+    return null;
+  }
 
   const maxDim = 1536;
   let cw = w, ch = h;
@@ -132,6 +198,7 @@ function captureForOCR() {
   canvas.width = cw;
   canvas.height = ch;
   ctx.drawImage(source, 0, 0, cw, ch);
+  console.log("[Capture] Got frame:", cw, "x", ch);
   return canvas;
 }
 
@@ -139,28 +206,37 @@ function captureForOCR() {
 async function translate() {
   if (state.isTranslating) return;
 
+  if (!state.ocrReady) {
+    showResult('<div class="error-msg">OCR 引擎仍在載入中，請稍候...</div>');
+    return;
+  }
+
   const imgSource = captureForOCR();
   if (!imgSource) {
-    showResult('<div class="error-msg">無法擷取畫面</div>');
+    showResult('<div class="error-msg">無法擷取畫面<br><span style="font-size:12px;opacity:0.6">請確認已允許相機權限，或上傳圖片</span></div>');
     return;
   }
 
   state.isTranslating = true;
   btnCapture.classList.add("loading");
   scanOverlay.classList.add("active");
-  showResult('<div class="loading-indicator">辨識文字中<span class="dots"></span></div>');
+  showResult('<div class="loading-indicator">正在辨識文字...<span class="dots"></span></div>');
 
   try {
     // Step 1: OCR
+    console.log("[Translate] Running OCR...");
     const ocrText = await runOCR(imgSource);
+    console.log("[Translate] OCR result:", ocrText.slice(0, 200));
+
     if (!ocrText.trim()) {
-      showResult('<div class="no-text">未偵測到文字<br><span style="font-size:12px;opacity:0.6">請對準有文字的地方再試</span></div>');
+      showResult('<div class="no-text">未偵測到文字<br><span style="font-size:12px;opacity:0.6">請靠近文字、確保光線充足再試</span></div>');
       return;
     }
 
-    showResult('<div class="loading-indicator">翻譯中<span class="dots"></span></div>');
+    showResult(`<div class="loading-indicator">辨識到文字，正在翻譯...<span class="dots"></span></div>`);
 
     // Step 2: Translate via server (Google Translate, free)
+    console.log("[Translate] Calling API...");
     const res = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -170,7 +246,13 @@ async function translate() {
       }),
     });
 
+    if (!res.ok) {
+      throw new Error(`Server error: ${res.status}`);
+    }
+
     const data = await res.json();
+    console.log("[Translate] API response:", data);
+
     if (data.error) {
       showResult(`<div class="error-msg">${escapeHtml(data.error)}</div>`);
     } else if (data.translation) {
@@ -180,7 +262,8 @@ async function translate() {
       showResult('<div class="no-text">未收到翻譯結果</div>');
     }
   } catch (err) {
-    showResult(`<div class="error-msg">${escapeHtml(err.message)}</div>`);
+    console.error("[Translate] Error:", err);
+    showResult(`<div class="error-msg">錯誤: ${escapeHtml(err.message)}</div>`);
   } finally {
     state.isTranslating = false;
     btnCapture.classList.remove("loading");
@@ -238,6 +321,8 @@ function closeResult() { resultPanel.classList.remove("open"); }
 // ── Auto ──
 function toggleAuto() {
   if (autoToggle.checked) {
+    // Run once immediately, then repeat
+    translate();
     state.autoTimer = setInterval(() => {
       if (!state.isTranslating && !imagePreview.classList.contains("active")) translate();
     }, state.autoInterval * 1000);
@@ -257,7 +342,7 @@ function handleFileSelect(e) {
     previewImg.onload = () => {
       imagePreview.classList.add("active");
       video.style.display = "none";
-      setTimeout(translate, 200);
+      setTimeout(translate, 300);
     };
   };
   reader.readAsDataURL(file);
