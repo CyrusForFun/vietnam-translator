@@ -16,6 +16,8 @@ const $ = (sel) => document.querySelector(sel);
 const video = $("#video");
 const canvas = $("#canvas");
 const ctx = canvas.getContext("2d");
+const overlayCanvas = $("#overlayCanvas");
+const overlayCtx = overlayCanvas.getContext("2d");
 
 const btnCapture = $("#btnCapture");
 const btnUpload = $("#btnUpload");
@@ -40,77 +42,59 @@ const statusDot = $("#statusDot");
 const rateBadge = $("#rateBadge");
 const inputInterval = $("#inputInterval");
 
-// ── Status display (reuse rateBadge area or create new) ──
-function setStatus(msg) {
-  console.log("[status]", msg);
-  document.title = msg;
-}
-
 // ── Init ──
 async function init() {
   inputInterval.value = state.autoInterval;
   fetchExchangeRate();
   await startCamera();
   bindEvents();
-  // Init OCR — show progress in result panel
   await initOCR();
 }
 
 // ── OCR ──
 async function initOCR() {
-  showResult('<div class="loading-indicator">正在載入 OCR 引擎...<br><span style="font-size:12px;opacity:0.6">首次載入需下載語言包（約 5MB）</span><span class="dots"></span></div>');
-  setStatus("Loading OCR...");
-
+  showResult('<div class="loading-indicator">正在載入 OCR 引擎...<span class="dots"></span></div>');
   try {
-    if (typeof Tesseract === "undefined") {
-      throw new Error("Tesseract.js 未能載入，請檢查網路連線");
-    }
+    if (typeof Tesseract === "undefined") throw new Error("Tesseract.js 未能載入");
 
     state.ocrWorker = await Tesseract.createWorker("vie+eng", 1, {
       logger: (m) => {
-        if (m.status === "loading tesseract core") {
-          showResult('<div class="loading-indicator">載入 OCR 核心引擎...<span class="dots"></span></div>');
-        } else if (m.status === "initializing tesseract") {
-          showResult('<div class="loading-indicator">初始化 OCR...<span class="dots"></span></div>');
-        } else if (m.status === "loading language traineddata") {
+        if (m.status === "loading language traineddata") {
           const pct = m.progress ? Math.round(m.progress * 100) : 0;
-          showResult(`<div class="loading-indicator">下載越南語語言包... ${pct}%<span class="dots"></span></div>`);
-        } else if (m.status === "initializing api") {
-          showResult('<div class="loading-indicator">準備就緒...<span class="dots"></span></div>');
+          showResult(`<div class="loading-indicator">下載語言包... ${pct}%<span class="dots"></span></div>`);
         }
       },
     });
 
     state.ocrReady = true;
     statusDot.classList.add("connected");
-    setStatus("VN Translate - Ready");
     closeResult();
-    console.log("[OCR] Ready - vie+eng");
   } catch (err) {
-    console.error("[OCR] Init failed:", err);
-    setStatus("OCR Failed");
-    showResult(`<div class="error-msg">OCR 引擎載入失敗<br><br>${escapeHtml(err.message)}<br><br><span style="font-size:12px">請重新整理頁面再試</span></div>`);
+    showResult(`<div class="error-msg">OCR 載入失敗: ${escapeHtml(err.message)}</div>`);
   }
 }
 
+// Returns { text, lines: [{ text, bbox: {x0,y0,x1,y1} }] }
 async function runOCR(imageSource) {
-  if (!state.ocrReady || !state.ocrWorker) {
-    throw new Error("OCR 引擎尚未就緒，請等待載入完成後再試");
-  }
+  if (!state.ocrReady) throw new Error("OCR 引擎尚未就緒");
 
-  // Convert canvas to blob for better compatibility across devices
   let input = imageSource;
   if (imageSource instanceof HTMLCanvasElement) {
     input = await new Promise((resolve, reject) => {
-      imageSource.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error("Canvas toBlob failed"))),
-        "image/png"
-      );
+      imageSource.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png");
     });
   }
 
   const { data } = await state.ocrWorker.recognize(input);
-  return data.text;
+
+  const lines = (data.lines || [])
+    .filter((l) => l.text.trim())
+    .map((l) => ({
+      text: l.text.trim(),
+      bbox: l.bbox, // {x0, y0, x1, y1} in source image pixels
+    }));
+
+  return { text: data.text, lines };
 }
 
 // ── Exchange Rate ──
@@ -140,24 +124,12 @@ async function startCamera() {
     cameraPlaceholder.style.display = "none";
     video.style.display = "block";
 
-    // Wait for video to actually be ready
     await new Promise((resolve) => {
-      if (video.readyState >= 2) {
-        state.videoReady = true;
-        resolve();
-      } else {
-        video.onloadeddata = () => {
-          state.videoReady = true;
-          resolve();
-        };
-      }
-      // Timeout after 5 seconds
+      if (video.readyState >= 2) { state.videoReady = true; resolve(); }
+      else { video.onloadeddata = () => { state.videoReady = true; resolve(); }; }
       setTimeout(() => { state.videoReady = true; resolve(); }, 5000);
     });
-
-    console.log("[Camera] Ready:", video.videoWidth, "x", video.videoHeight);
-  } catch (err) {
-    console.warn("[Camera] Error:", err);
+  } catch {
     cameraPlaceholder.style.display = "flex";
     video.style.display = "none";
   }
@@ -165,11 +137,12 @@ async function startCamera() {
 
 function flipCamera() {
   state.facingMode = state.facingMode === "environment" ? "user" : "environment";
+  hideOverlay();
   startCamera();
 }
 
 // ── Capture ──
-function captureForOCR() {
+function captureFrame() {
   let source, w, h;
   if (imagePreview.classList.contains("active")) {
     source = previewImg;
@@ -182,11 +155,7 @@ function captureForOCR() {
   } else {
     return null;
   }
-
-  if (!w || !h) {
-    console.warn("[Capture] No dimensions:", w, h);
-    return null;
-  }
+  if (!w || !h) return null;
 
   const maxDim = 1024;
   let cw = w, ch = h;
@@ -198,72 +167,143 @@ function captureForOCR() {
   canvas.width = cw;
   canvas.height = ch;
   ctx.drawImage(source, 0, 0, cw, ch);
-  console.log("[Capture] Got frame:", cw, "x", ch);
-  return canvas;
+  return { canvas, width: cw, height: ch };
 }
 
-// ── Translate: OCR → Google Translate ──
+// ── Overlay: draw translations on top of camera ──
+function drawOverlay(frame, ocrLines, translatedLines) {
+  const { width: fw, height: fh } = frame;
+
+  // Set overlay to match the captured frame size
+  overlayCanvas.width = fw;
+  overlayCanvas.height = fh;
+
+  // Draw the captured frame as background
+  overlayCtx.drawImage(canvas, 0, 0, fw, fh);
+
+  // Draw each translated line on top of its original position
+  const lineCount = Math.min(ocrLines.length, translatedLines.length);
+
+  for (let i = 0; i < lineCount; i++) {
+    const line = ocrLines[i];
+    const translated = translatedLines[i]?.trim();
+    if (!translated || !line.bbox) continue;
+
+    const { x0, y0, x1, y1 } = line.bbox;
+    const boxW = x1 - x0;
+    const boxH = y1 - y0;
+    if (boxW < 5 || boxH < 5) continue;
+
+    // Paint over original text with solid background
+    overlayCtx.fillStyle = "rgba(20, 20, 30, 0.88)";
+    const pad = 4;
+    overlayCtx.fillRect(x0 - pad, y0 - pad, boxW + pad * 2, boxH + pad * 2);
+
+    // Pick font size to fit the box
+    let fontSize = Math.max(boxH * 0.75, 12);
+    overlayCtx.font = `bold ${fontSize}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+    overlayCtx.fillStyle = "#FFD166";
+    overlayCtx.textBaseline = "middle";
+
+    // Shrink font if text is wider than box
+    let measured = overlayCtx.measureText(translated);
+    while (measured.width > boxW + pad * 2 && fontSize > 10) {
+      fontSize -= 1;
+      overlayCtx.font = `bold ${fontSize}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
+      measured = overlayCtx.measureText(translated);
+    }
+
+    // Draw centered in the box
+    const tx = x0 + (boxW - measured.width) / 2;
+    const ty = y0 + boxH / 2;
+    overlayCtx.fillText(translated, tx, ty);
+
+    // Draw currency badge if detected
+    const currencyMatch = line.text.match(/(\d[\d.,]*)\s*(?:₫|đ|d|dong|VND)\b/i);
+    if (currencyMatch && state.exchangeRate) {
+      const numStr = currencyMatch[1].replace(/[.,]/g, "");
+      const amount = parseInt(numStr, 10);
+      if (amount >= 1000) {
+        const hkd = (amount / state.exchangeRate).toFixed(1);
+        const badge = `≈ ${hkd} HKD`;
+        overlayCtx.font = `bold ${Math.max(fontSize * 0.6, 10)}px sans-serif`;
+        overlayCtx.fillStyle = "#06d6a0";
+        overlayCtx.fillText(badge, x0, y1 + fontSize * 0.5);
+      }
+    }
+  }
+
+  overlayCanvas.classList.add("active");
+}
+
+function hideOverlay() {
+  overlayCanvas.classList.remove("active");
+}
+
+// ── Translate ──
 async function translate() {
   if (state.isTranslating) return;
-
   if (!state.ocrReady) {
-    showResult('<div class="error-msg">OCR 引擎仍在載入中，請稍候...</div>');
+    showResult('<div class="error-msg">OCR 引擎載入中...</div>');
     return;
   }
 
-  const imgSource = captureForOCR();
-  if (!imgSource) {
-    showResult('<div class="error-msg">無法擷取畫面<br><span style="font-size:12px;opacity:0.6">請確認已允許相機權限，或上傳圖片</span></div>');
+  const frame = captureFrame();
+  if (!frame) {
+    showResult('<div class="error-msg">無法擷取畫面</div>');
     return;
   }
 
   state.isTranslating = true;
   btnCapture.classList.add("loading");
   scanOverlay.classList.add("active");
-  showResult('<div class="loading-indicator">正在辨識文字...<span class="dots"></span></div>');
 
   try {
-    // Step 1: OCR
-    console.log("[Translate] Running OCR...");
-    const ocrText = await runOCR(imgSource);
-    console.log("[Translate] OCR result:", ocrText.slice(0, 200));
+    // Step 1: OCR with bounding boxes
+    const ocr = await runOCR(frame.canvas);
 
-    if (!ocrText.trim()) {
-      showResult('<div class="no-text">未偵測到文字<br><span style="font-size:12px;opacity:0.6">請靠近文字、確保光線充足再試</span></div>');
+    if (!ocr.lines.length) {
+      showResult('<div class="no-text">未偵測到文字</div>');
       return;
     }
 
-    showResult(`<div class="loading-indicator">辨識到文字，正在翻譯...<span class="dots"></span></div>`);
-
-    // Step 2: Translate via server (Google Translate, free)
-    console.log("[Translate] Calling API...");
+    // Step 2: Translate (single API call)
+    const allText = ocr.lines.map((l) => l.text).join("\n");
     const res = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: ocrText,
-        exchangeRate: state.exchangeRate || 3200,
-      }),
+      body: JSON.stringify({ text: allText, exchangeRate: state.exchangeRate || 3200 }),
     });
 
-    if (!res.ok) {
-      throw new Error(`Server error: ${res.status}`);
-    }
-
+    if (!res.ok) throw new Error(`Server ${res.status}`);
     const data = await res.json();
-    console.log("[Translate] API response:", data);
+    if (data.error) throw new Error(data.error);
 
-    if (data.error) {
-      showResult(`<div class="error-msg">${escapeHtml(data.error)}</div>`);
-    } else if (data.translation) {
-      state.lastResult = data.translation;
-      renderTranslation(data.translation);
-    } else {
-      showResult('<div class="no-text">未收到翻譯結果</div>');
+    // Step 3: Parse translated lines
+    // API returns "原文：xxx\n翻譯：yyy\n\n原文：..." format
+    // Extract just the 翻譯 lines
+    const translatedLines = [];
+    const rawLines = data.translation.split("\n");
+    for (const rl of rawLines) {
+      const m = rl.match(/^翻譯[：:]\s*(.+)/);
+      if (m) translatedLines.push(m[1]);
     }
+
+    // Fallback: if parsing fails, split the Google Translate raw output
+    if (translatedLines.length === 0 && data.translation) {
+      translatedLines.push(...data.translation.split("\n").filter((l) => l.trim()));
+    }
+
+    // Step 4: Draw overlay
+    drawOverlay(frame, ocr.lines, translatedLines);
+
+    // Also save for history
+    state.lastResult = data.translation;
+
+    // Close the bottom panel if open
+    closeResult();
   } catch (err) {
-    console.error("[Translate] Error:", err);
-    showResult(`<div class="error-msg">錯誤: ${escapeHtml(err.message)}</div>`);
+    showResult(`<div class="error-msg">${escapeHtml(err.message)}</div>`);
   } finally {
     state.isTranslating = false;
     btnCapture.classList.remove("loading");
@@ -271,7 +311,7 @@ async function translate() {
   }
 }
 
-// ── Render ──
+// ── Render (for history view) ──
 function renderTranslation(text) {
   const blocks = parseBlocks(text);
   if (blocks.length > 0) {
@@ -292,36 +332,27 @@ function parseBlocks(text) {
   const blocks = [];
   const lines = text.split("\n");
   let cur = null;
-
   for (const line of lines) {
     const t = line.trim();
     if (!t) { if (cur?.translated) { blocks.push(cur); cur = null; } continue; }
-
     const om = t.match(/^原文[：:]\s*(.+)/);
     if (om) { if (cur?.translated) blocks.push(cur); cur = { original: om[1], translated: "", currency: "" }; continue; }
-
     const tm = t.match(/^翻譯[：:]\s*(.+)/);
     if (tm) { if (!cur) cur = { original: "", translated: "", currency: "" }; cur.translated = tm[1]; continue; }
-
     const cm = t.match(/^💰\s*(.+)/);
     if (cm) { if (!cur) cur = { original: "", translated: "", currency: "" }; cur.currency += (cur.currency ? " | " : "") + cm[1]; continue; }
-
     if (cur) { cur.translated ? (cur.translated += "\n" + t) : (cur.translated = t); }
   }
   if (cur?.translated) blocks.push(cur);
   return blocks;
 }
 
-function showResult(html) {
-  resultContent.innerHTML = html;
-  resultPanel.classList.add("open");
-}
+function showResult(html) { resultContent.innerHTML = html; resultPanel.classList.add("open"); }
 function closeResult() { resultPanel.classList.remove("open"); }
 
 // ── Auto ──
 function toggleAuto() {
   if (autoToggle.checked) {
-    // Run once immediately, then repeat
     translate();
     state.autoTimer = setInterval(() => {
       if (!state.isTranslating && !imagePreview.classList.contains("active")) translate();
@@ -342,6 +373,7 @@ function handleFileSelect(e) {
     previewImg.onload = () => {
       imagePreview.classList.add("active");
       video.style.display = "none";
+      hideOverlay();
       setTimeout(translate, 300);
     };
   };
@@ -351,6 +383,7 @@ function handleFileSelect(e) {
 
 function closePreview() {
   imagePreview.classList.remove("active");
+  hideOverlay();
   state.stream ? (video.style.display = "block") : (cameraPlaceholder.style.display = "flex");
 }
 
@@ -376,6 +409,9 @@ function bindEvents() {
   settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) settingsModal.classList.remove("open"); });
   autoToggle.addEventListener("change", toggleAuto);
   fileInput.addEventListener("change", handleFileSelect);
+
+  // Tap overlay to dismiss it
+  overlayCanvas.addEventListener("click", hideOverlay);
 
   let touchY = 0;
   resultPanel.addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; });

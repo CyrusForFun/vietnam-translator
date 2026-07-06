@@ -106,8 +106,24 @@ html, body {
   object-fit: cover;
 }
 
-.camera-container canvas {
+.camera-container canvas#canvas {
   display: none;
+}
+
+/* Translation overlay — sits on top of camera */
+.camera-container canvas#overlayCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 4;
+  display: none;
+  cursor: pointer;
+}
+
+.camera-container canvas#overlayCanvas.active {
+  display: block;
 }
 
 .camera-placeholder {
