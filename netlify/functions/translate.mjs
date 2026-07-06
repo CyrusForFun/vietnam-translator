@@ -98,11 +98,21 @@ export default async function handler(req) {
 
   try {
     const body = await req.json();
-    const { apiKey, image, mimeType, botName, exchangeRate } = body;
+    const { image, mimeType, botName, exchangeRate } = body;
 
-    if (!apiKey || !image) {
+    // Use server env var — frontend never needs to send the key
+    const apiKey = process.env.POE_API_KEY;
+
+    if (!apiKey) {
       return new Response(
-        JSON.stringify({ error: "Missing apiKey or image" }),
+        JSON.stringify({ error: "Server missing POE_API_KEY env var" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (!image) {
+      return new Response(
+        JSON.stringify({ error: "Missing image data" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }

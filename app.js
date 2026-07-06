@@ -1,6 +1,5 @@
 // ── State ──
 const state = {
-  apiKey: localStorage.getItem("poe_api_key") || "",
   botName: localStorage.getItem("bot_name") || "GPT-4o",
   autoInterval: parseInt(localStorage.getItem("auto_interval") || "5"),
   exchangeRate: null,
@@ -42,7 +41,6 @@ const statusDot = $("#statusDot");
 const rateBadge = $("#rateBadge");
 
 // Settings inputs
-const inputApiKey = $("#inputApiKey");
 const selectModel = $("#selectModel");
 const inputInterval = $("#inputInterval");
 
@@ -56,17 +54,14 @@ async function init() {
 }
 
 function loadSettings() {
-  inputApiKey.value = state.apiKey;
   selectModel.value = state.botName;
   inputInterval.value = state.autoInterval;
 }
 
 function saveSettings() {
-  state.apiKey = inputApiKey.value.trim();
   state.botName = selectModel.value;
   state.autoInterval = parseInt(inputInterval.value) || 5;
 
-  localStorage.setItem("poe_api_key", state.apiKey);
   localStorage.setItem("bot_name", state.botName);
   localStorage.setItem("auto_interval", String(state.autoInterval));
 
@@ -74,7 +69,8 @@ function saveSettings() {
 }
 
 function updateStatus() {
-  statusDot.classList.toggle("connected", !!state.apiKey);
+  // Key is server-side now, always show connected
+  statusDot.classList.add("connected");
 }
 
 // ── Exchange Rate ──
@@ -170,11 +166,6 @@ function getImagePreviewBase64() {
 // ── Translate ──
 async function translate() {
   if (state.isTranslating) return;
-  if (!state.apiKey) {
-    showResult('<div class="error-msg">請先在設定中輸入 Poe API Key</div>');
-    settingsModal.classList.add("open");
-    return;
-  }
 
   const imageData = captureFrame();
   if (!imageData) {
@@ -192,7 +183,6 @@ async function translate() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        apiKey: state.apiKey,
         image: imageData.base64,
         mimeType: imageData.mimeType,
         botName: state.botName,
@@ -397,12 +387,5 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ── First-run: auto-open settings if no API key ──
-function checkFirstRun() {
-  if (!state.apiKey) {
-    setTimeout(() => settingsModal.classList.add("open"), 500);
-  }
-}
-
 // ── Boot ──
-init().then(checkFirstRun);
+init();
