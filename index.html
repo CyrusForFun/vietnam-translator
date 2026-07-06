@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>VN Translate</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-title">
+        <span class="flag">&#127483;&#127475;</span>
+        <span>VN Translate</span>
+        <span class="status-dot" id="statusDot"></span>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="btnSettings" title="Settings">&#9881;</button>
+      </div>
+    </div>
+
+    <!-- Camera -->
+    <div class="camera-container" id="cameraContainer">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+
+      <div class="camera-placeholder" id="cameraPlaceholder">
+        <div class="icon">&#128247;</div>
+        <div>點擊下方按鈕開啟相機</div>
+        <div style="font-size:12px;opacity:0.5">或上傳圖片進行翻譯</div>
+      </div>
+
+      <!-- Image preview for uploads -->
+      <div class="image-preview" id="imagePreview">
+        <button class="icon-btn close-preview" id="btnClosePreview">&#10005;</button>
+        <img id="previewImg" alt="preview">
+      </div>
+
+      <!-- Scan animation -->
+      <div class="scan-overlay" id="scanOverlay">
+        <div class="scan-line"></div>
+        <div class="scan-corners"></div>
+        <div class="scan-corners-bottom"></div>
+      </div>
+
+      <!-- Exchange rate badge -->
+      <div class="rate-badge" id="rateBadge">
+        &#128178; 載入匯率中...
+      </div>
+    </div>
+
+    <!-- Action Bar -->
+    <div class="action-bar">
+      <button class="action-btn" id="btnUpload" title="上傳圖片">&#128193;</button>
+      <button class="action-btn" id="btnFlipCamera" title="切換鏡頭">&#128260;</button>
+      <button class="capture-btn" id="btnCapture" title="拍照翻譯"></button>
+      <div class="auto-toggle">
+        <input type="checkbox" id="autoToggle">
+        <label for="autoToggle">自動</label>
+      </div>
+      <button class="action-btn" id="btnHistory" title="上次結果">&#128196;</button>
+    </div>
+
+    <!-- Result Panel (slides up) -->
+    <div class="result-panel" id="resultPanel">
+      <div class="result-handle" id="resultHandle"></div>
+      <div class="result-header">
+        <h3>&#128221; 翻譯結果</h3>
+        <button class="icon-btn" id="btnCloseResult" style="width:30px;height:30px;font-size:14px">&#10005;</button>
+      </div>
+      <div class="result-content" id="resultContent">
+        <!-- Translation results go here -->
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+      <div class="modal">
+        <h2>&#9881; 設定</h2>
+
+        <div class="form-group">
+          <label>Poe API Key</label>
+          <input type="password" id="inputApiKey" placeholder="sk-poe-xxxx...">
+          <div class="hint">從 poe.com/api_key 取得</div>
+        </div>
+
+        <div class="form-group">
+          <label>AI 模型</label>
+          <select id="selectModel">
+            <option value="GPT-4o">GPT-4o (推薦)</option>
+            <option value="Claude-3.5-Sonnet">Claude 3.5 Sonnet</option>
+            <option value="Claude-3-Opus">Claude 3 Opus</option>
+            <option value="Gemini-1.5-Pro">Gemini 1.5 Pro</option>
+            <option value="GPT-4o-Mini">GPT-4o Mini (較快)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>自動翻譯間隔（秒）</label>
+          <input type="number" id="inputInterval" value="5" min="3" max="30">
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="btnCancelSettings">取消</button>
+          <button class="btn btn-primary" id="btnSaveSettings">儲存</button>
+        </div>
+      </div>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*">
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
