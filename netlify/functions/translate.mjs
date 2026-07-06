@@ -3,6 +3,7 @@
 
 const POE_UPLOAD_URL = "https://www.quora.com/poe_api/file_upload_3RD_PARTY_POST";
 const POE_BOT_URL = "https://api.poe.com/bot/";
+const PROTOCOL_VERSION = "1.2";
 
 function generateId() {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 24);
@@ -16,23 +17,35 @@ async function uploadImage(apiKey, base64Data, mimeType) {
   }
 
   const ext = mimeType.includes("png") ? "png" : "jpg";
-  const formData = new FormData();
-  formData.append("file", new Blob([bytes], { type: mimeType }), `capture.${ext}`);
+  const fileName = `capture.${ext}`;
 
+  const formData = new FormData();
+  formData.append("file", new Blob([bytes], { type: mimeType }), fileName);
+
+  // Poe upload uses raw API key (no "Bearer" prefix)
   const res = await fetch(POE_UPLOAD_URL, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: { Authorization: apiKey },
     body: formData,
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Upload failed (${res.status}): ${errText}`);
+    throw new Error(`${res.status}: ${errText}`);
   }
 
-  // Response may contain inline attachment data or a JSON object
   const data = await res.json();
-  return data;
+
+  // Poe returns { attachment_url: "...", mime_type: "..." }
+  if (!data.attachment_url) {
+    throw new Error(`Unexpected upload response: ${JSON.stringify(data)}`);
+  }
+
+  return {
+    url: data.attachment_url,
+    content_type: data.mime_type || mimeType,
+    name: fileName,
+  };
 }
 
 function buildPrompt(exchangeRate) {
@@ -130,46 +143,29 @@ export default async function handler(req) {
       );
     }
 
-    // Normalize attachment - ensure it has the right shape
-    const attachmentObj = {
-      url: attachment.url || attachment.attachment_url || attachment.inline_ref,
-      content_type: mimeType || "image/jpeg",
-      name: "capture.jpg",
-    };
-
-    // If the upload returned a different structure, try to adapt
-    if (!attachmentObj.url && typeof attachment === "object") {
-      // Try to find any URL-like field
-      for (const [key, val] of Object.entries(attachment)) {
-        if (typeof val === "string" && (val.startsWith("http") || val.startsWith("/"))) {
-          attachmentObj.url = val;
-          break;
-        }
-      }
-    }
-
     // Step 2: Query the bot with the image
     const prompt = buildPrompt(exchangeRate || 3200);
     const queryBody = {
-      version: "1.2",
+      version: PROTOCOL_VERSION,
       type: "query",
       query: [
         {
           role: "user",
           content: prompt,
           content_type: "text/markdown",
-          attachments: [attachmentObj],
+          attachments: [attachment],
         },
       ],
-      user_id: "vn-translator",
+      user_id: "",
       conversation_id: generateId(),
       message_id: generateId(),
     };
 
+    // Poe bot query also uses raw API key (no "Bearer" prefix)
     const botRes = await fetch(`${POE_BOT_URL}${model}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: apiKey,
         "Content-Type": "application/json",
         Accept: "text/event-stream",
       },
@@ -179,7 +175,10 @@ export default async function handler(req) {
     if (!botRes.ok) {
       const errText = await botRes.text();
       return new Response(
-        JSON.stringify({ error: `Bot query failed (${botRes.status}): ${errText}` }),
+        JSON.stringify({
+          error: `Bot query failed (${botRes.status}): ${errText}`,
+          debug: { model, attachmentUrl: attachment.url },
+        }),
         { status: 502, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -192,11 +191,12 @@ export default async function handler(req) {
       // If SSE parsing got nothing, return raw (might be plain JSON)
       try {
         const jsonRes = JSON.parse(rawResponse);
-        return new Response(JSON.stringify({ translation: jsonRes.text || rawResponse }), {
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ translation: jsonRes.text || JSON.stringify(jsonRes) }),
+          { headers: { "Content-Type": "application/json" } }
+        );
       } catch {
-        return new Response(JSON.stringify({ translation: rawResponse }), {
+        return new Response(JSON.stringify({ translation: rawResponse || "（空白回應）" }), {
           headers: { "Content-Type": "application/json" },
         });
       }
