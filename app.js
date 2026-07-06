@@ -133,7 +133,7 @@ async function startCamera() {
   try {
     if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: state.facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      video: { facingMode: state.facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     });
     video.srcObject = state.stream;
@@ -188,7 +188,7 @@ function captureForOCR() {
     return null;
   }
 
-  const maxDim = 1536;
+  const maxDim = 1024;
   let cw = w, ch = h;
   if (cw > maxDim || ch > maxDim) {
     const r = Math.min(maxDim / cw, maxDim / ch);
