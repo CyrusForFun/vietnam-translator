@@ -1,74 +1,137 @@
-// Poe API proxy — receives extracted text, returns Chinese translation
+// Translation proxy — Google Translate (free, no key) + Poe/Gemini optional
 
-const POE_BOT_URL = "https://api.poe.com/bot/";
-const PROTOCOL_VERSION = "1.2";
+// Google Translate unofficial API (same as web client uses)
+async function googleTranslate(text, sourceLang, targetLang) {
+  const url = new URL("https://translate.googleapis.com/translate_a/single");
+  url.searchParams.set("client", "gtx");
+  url.searchParams.set("sl", sourceLang);
+  url.searchParams.set("tl", targetLang);
+  url.searchParams.set("dt", "t");
+  url.searchParams.set("q", text);
 
-function generateId() {
-  return `${Date.now()}${Math.random().toString(36).slice(2, 10)}`;
+  const res = await fetch(url.toString(), {
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Google Translate ${res.status}`);
+  }
+
+  const data = await res.json();
+  // Response: [[["translated","original",...],...],...,"detected_lang"]
+  if (!Array.isArray(data) || !Array.isArray(data[0])) {
+    throw new Error("Unexpected Google Translate response");
+  }
+
+  return data[0].map((seg) => seg[0]).join("");
 }
 
-function buildPrompt(ocrText, exchangeRate) {
-  return `你是一個專業的越南語翻譯助手，專門幫助香港旅客在越南旅行。
+// Detect VND amounts and convert to HKD
+function convertCurrency(text, rate) {
+  // Match patterns like: 50.000đ, 50,000 VND, 50000₫, 50.000 đồng, etc.
+  const vndPattern = /(\d[\d.,]*)\s*(?:₫|đ|đồng|VND|vnd|dong)/gi;
+  const conversions = [];
 
-以下是從圖片中 OCR 提取的文字（可能有少許辨識錯誤，請根據上下文自動修正）：
-
----
-${ocrText}
----
-
-請執行以下任務：
-
-1. 將所有越南語文字翻譯成繁體中文
-2. 如果有其他語言（英文等），也一併翻譯
-3. 如果發現任何越南盾金額（VND/₫/đ/dong），自動換算成港幣
-   匯率：1 HKD ≈ ${exchangeRate} VND
-
-回覆格式（每段文字）：
-
-原文：[原文，修正明顯 OCR 錯誤後]
-翻譯：[繁體中文翻譯]
-💰 [如有金額：X VND ≈ Y HKD]
-
-注意：
-- 翻譯要自然通順
-- 如果是菜單/餐牌，保持格式整齊
-- 金額四捨五入到小數點後一位
-- 如果文字無意義或無法辨認，回覆：「無法辨識文字內容」
-- 直接給結果，不要多餘解釋`;
-}
-
-function parseSSE(raw) {
-  const lines = raw.split("\n");
-  let result = "";
-  let error = null;
-  for (const line of lines) {
-    if (line.startsWith("event: error")) {
-      // Next data line is the error
-      continue;
+  let match;
+  while ((match = vndPattern.exec(text)) !== null) {
+    // Parse Vietnamese number format (50.000 = 50000, 50,000 = 50000)
+    let numStr = match[1].replace(/\./g, "").replace(/,/g, "");
+    const amount = parseInt(numStr, 10);
+    if (amount > 0 && amount < 1e12) {
+      const hkd = (amount / rate).toFixed(1);
+      conversions.push({
+        original: match[0],
+        vnd: amount,
+        hkd: parseFloat(hkd),
+      });
     }
-    if (line.startsWith("data: ")) {
-      try {
-        const payload = JSON.parse(line.slice(6));
-        if (payload.error_type || payload.allow_retry !== undefined) {
-          error = payload.text || "Unknown bot error";
-        } else if (payload.text) {
-          result += payload.text;
-        }
-      } catch {
-        // skip
+  }
+
+  // Also match standalone large numbers that are likely VND (e.g., "50.000" on a menu)
+  const standalonePattern = /\b(\d{2,3}(?:[.,]\d{3})+)\b/g;
+  while ((match = standalonePattern.exec(text)) !== null) {
+    let numStr = match[1].replace(/\./g, "").replace(/,/g, "");
+    const amount = parseInt(numStr, 10);
+    // Only consider amounts typical for VND (>= 1000)
+    if (amount >= 1000 && amount < 1e9) {
+      const already = conversions.some((c) => c.vnd === amount);
+      if (!already) {
+        const hkd = (amount / rate).toFixed(1);
+        conversions.push({
+          original: match[0],
+          vnd: amount,
+          hkd: parseFloat(hkd),
+        });
       }
     }
   }
-  return { result, error };
+
+  return conversions;
+}
+
+// ── Poe text-only (optional) ──
+async function translateWithPoe(apiKey, ocrText, exchangeRate, model) {
+  const botName = model || "GPT-4o-Mini";
+  const prompt = `將以下越南語翻譯成繁體中文，如有金額(VND)請換算港幣(1 HKD≈${exchangeRate} VND)。格式：原文：xxx\\n翻譯：xxx\\n💰 xxx VND ≈ xxx HKD\\n\\n${ocrText}`;
+
+  const res = await fetch(`https://api.poe.com/bot/${botName}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({
+      version: "1.2",
+      type: "query",
+      query: [{ role: "user", content: prompt, content_type: "text/plain", attachments: [] }],
+      user_id: "",
+      conversation_id: `${Date.now()}`,
+      message_id: `m${Date.now()}`,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Poe ${res.status}`);
+
+  const raw = await res.text();
+  let result = "";
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("data: ")) {
+      try {
+        const p = JSON.parse(line.slice(6));
+        if (p.text && !p.error_type) result += p.text;
+        if (p.error_type) throw new Error(p.text);
+      } catch (e) {
+        if (e.message && !e.message.includes("JSON")) throw e;
+      }
+    }
+  }
+  return result;
+}
+
+// ── Gemini vision (optional) ──
+async function translateWithGemini(apiKey, base64Image, mimeType, exchangeRate, model) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model || "gemini-2.0-flash"}:generateContent?key=${apiKey}`;
+  const prompt = `分析圖片中的越南語文字，翻譯成繁體中文。如有金額(VND)換算港幣(1 HKD≈${exchangeRate} VND)。格式：原文：xxx\\n翻譯：xxx\\n💰 xxx`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Image } }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
   });
 }
 
@@ -84,71 +147,63 @@ export default async function handler(req) {
     });
   }
 
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
-
-  const apiKey = process.env.POE_API_KEY;
-  if (!apiKey) {
-    return json({ error: "Server missing POE_API_KEY" }, 500);
-  }
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
     const body = await req.json();
-    const { text, botName, exchangeRate } = body;
+    const { text, image, mimeType, backend, model, exchangeRate } = body;
+    const rate = exchangeRate || 3200;
 
-    if (!text || !text.trim()) {
-      return json({ error: "No text to translate" }, 400);
+    // ── Gemini vision path ──
+    if (backend === "gemini" && image) {
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) return json({ error: "No GEMINI_API_KEY" }, 500);
+      const translation = await translateWithGemini(key, image, mimeType, rate, model);
+      return json({ translation, backend: "gemini" });
     }
 
-    const model = botName || "GPT-4o-Mini";
-    const prompt = buildPrompt(text.trim(), exchangeRate || 3200);
+    // ── Poe text path ──
+    if (backend === "poe" && text) {
+      const key = process.env.POE_API_KEY;
+      if (!key) return json({ error: "No POE_API_KEY" }, 500);
+      const translation = await translateWithPoe(key, text, rate, model);
+      return json({ translation, backend: "poe" });
+    }
 
-    const queryBody = {
-      version: PROTOCOL_VERSION,
-      type: "query",
-      query: [
-        {
-          role: "user",
-          content: prompt,
-          content_type: "text/plain",
-          attachments: [],
-        },
-      ],
-      user_id: "",
-      conversation_id: generateId(),
-      message_id: generateId(),
-    };
+    // ── Default: Google Translate (free, no key) ──
+    if (!text) return json({ error: "Missing text" }, 400);
 
-    const botRes = await fetch(`${POE_BOT_URL}${model}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify(queryBody),
+    // Split into lines and translate each
+    const lines = text.split("\n").filter((l) => l.trim());
+    const results = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const translated = await googleTranslate(line.trim(), "vi", "zh-TW");
+        const currencies = convertCurrency(line, rate);
+
+        let entry = `原文：${line.trim()}\n翻譯：${translated}`;
+        for (const c of currencies) {
+          entry += `\n💰 ${c.vnd.toLocaleString()} VND ≈ ${c.hkd} HKD`;
+        }
+        results.push(entry);
+      } catch {
+        // If one line fails, continue with others
+        results.push(`原文：${line.trim()}\n翻譯：[翻譯失敗]`);
+      }
+    }
+
+    // Also find currencies in the full text that might span lines
+    const allCurrencies = convertCurrency(text, rate);
+
+    return json({
+      translation: results.join("\n\n"),
+      currencies: allCurrencies,
+      backend: "google",
     });
-
-    if (!botRes.ok) {
-      const errText = await botRes.text();
-      return json({ error: `API error (${botRes.status}): ${errText}` }, 502);
-    }
-
-    const rawSSE = await botRes.text();
-    const { result, error } = parseSSE(rawSSE);
-
-    if (error) {
-      return json({ error: `Bot error: ${error}` }, 502);
-    }
-
-    if (!result) {
-      return json({ translation: rawSSE || "（空白回應）" });
-    }
-
-    return json({ translation: result });
   } catch (err) {
-    return json({ error: `Server error: ${err.message}` }, 500);
+    return json({ error: err.message }, 502);
   }
 }
 

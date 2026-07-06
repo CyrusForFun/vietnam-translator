@@ -12,7 +12,6 @@
 </head>
 <body>
   <div class="app">
-    <!-- Header -->
     <div class="header">
       <div class="header-title">
         <span class="flag">&#127483;&#127475;</span>
@@ -24,7 +23,6 @@
       </div>
     </div>
 
-    <!-- Camera -->
     <div class="camera-container" id="cameraContainer">
       <video id="video" autoplay playsinline muted></video>
       <canvas id="canvas"></canvas>
@@ -35,26 +33,20 @@
         <div style="font-size:12px;opacity:0.5">或上傳圖片進行翻譯</div>
       </div>
 
-      <!-- Image preview for uploads -->
       <div class="image-preview" id="imagePreview">
         <button class="icon-btn close-preview" id="btnClosePreview">&#10005;</button>
         <img id="previewImg" alt="preview">
       </div>
 
-      <!-- Scan animation -->
       <div class="scan-overlay" id="scanOverlay">
         <div class="scan-line"></div>
         <div class="scan-corners"></div>
         <div class="scan-corners-bottom"></div>
       </div>
 
-      <!-- Exchange rate badge -->
-      <div class="rate-badge" id="rateBadge">
-        &#128178; 載入匯率中...
-      </div>
+      <div class="rate-badge" id="rateBadge">&#128178; 載入匯率中...</div>
     </div>
 
-    <!-- Action Bar -->
     <div class="action-bar">
       <button class="action-btn" id="btnUpload" title="上傳圖片">&#128193;</button>
       <button class="action-btn" id="btnFlipCamera" title="切換鏡頭">&#128260;</button>
@@ -66,40 +58,22 @@
       <button class="action-btn" id="btnHistory" title="上次結果">&#128196;</button>
     </div>
 
-    <!-- Result Panel (slides up) -->
     <div class="result-panel" id="resultPanel">
       <div class="result-handle" id="resultHandle"></div>
       <div class="result-header">
         <h3>&#128221; 翻譯結果</h3>
         <button class="icon-btn" id="btnCloseResult" style="width:30px;height:30px;font-size:14px">&#10005;</button>
       </div>
-      <div class="result-content" id="resultContent">
-      </div>
+      <div class="result-content" id="resultContent"></div>
     </div>
 
-    <!-- Settings Modal -->
     <div class="modal-overlay" id="settingsModal">
       <div class="modal">
         <h2>&#9881; 設定</h2>
-
-        <div class="form-group">
-          <label>AI 模型</label>
-          <select id="selectModel">
-            <option value="GPT-4o-Mini">GPT-4o Mini (推薦 - 快速/精準/便宜)</option>
-            <option value="GPT-4-Turbo">GPT-4 Turbo (更強/較貴)</option>
-            <option value="GPT-4">GPT-4</option>
-            <option value="Gemini-1.5-Pro">Gemini 1.5 Pro</option>
-            <option value="Gemini-2.0-Flash">Gemini 2.0 Flash (快速)</option>
-            <option value="Claude-3-Haiku">Claude 3 Haiku (快速)</option>
-          </select>
-          <div class="hint">GPT-4o-Mini 翻譯精準且費用低，推薦使用</div>
-        </div>
-
         <div class="form-group">
           <label>自動翻譯間隔（秒）</label>
           <input type="number" id="inputInterval" value="5" min="3" max="30">
         </div>
-
         <div class="modal-actions">
           <button class="btn btn-ghost" id="btnCancelSettings">取消</button>
           <button class="btn btn-primary" id="btnSaveSettings">儲存</button>
