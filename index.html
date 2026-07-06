@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#0a0a0f">
   <title>VN Translate</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
   <div class="app">
@@ -73,7 +74,6 @@
         <button class="icon-btn" id="btnCloseResult" style="width:30px;height:30px;font-size:14px">&#10005;</button>
       </div>
       <div class="result-content" id="resultContent">
-        <!-- Translation results go here -->
       </div>
     </div>
 
@@ -85,12 +85,14 @@
         <div class="form-group">
           <label>AI 模型</label>
           <select id="selectModel">
-            <option value="GPT-4o">GPT-4o (推薦 - 視覺強/性價比高)</option>
-            <option value="GPT-4o-Mini">GPT-4o Mini (最快/最便宜)</option>
-            <option value="Claude-3.5-Sonnet">Claude 3.5 Sonnet</option>
+            <option value="GPT-4o-Mini">GPT-4o Mini (推薦 - 快速/精準/便宜)</option>
+            <option value="GPT-4-Turbo">GPT-4 Turbo (更強/較貴)</option>
+            <option value="GPT-4">GPT-4</option>
             <option value="Gemini-1.5-Pro">Gemini 1.5 Pro</option>
+            <option value="Gemini-2.0-Flash">Gemini 2.0 Flash (快速)</option>
+            <option value="Claude-3-Haiku">Claude 3 Haiku (快速)</option>
           </select>
-          <div class="hint">GPT-4o 視覺辨識最強，翻譯精準，費用適中</div>
+          <div class="hint">GPT-4o-Mini 翻譯精準且費用低，推薦使用</div>
         </div>
 
         <div class="form-group">

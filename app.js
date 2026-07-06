@@ -1,13 +1,15 @@
 // ── State ──
 const state = {
-  botName: localStorage.getItem("bot_name") || "GPT-4o",
+  botName: localStorage.getItem("bot_name") || "GPT-4o-Mini",
   autoInterval: parseInt(localStorage.getItem("auto_interval") || "5"),
   exchangeRate: null,
   stream: null,
-  facingMode: "environment", // back camera for translating signs/menus
+  facingMode: "environment",
   autoTimer: null,
   isTranslating: false,
   lastResult: null,
+  ocrWorker: null,
+  ocrReady: false,
 };
 
 // ── DOM ──
@@ -16,7 +18,6 @@ const video = $("#video");
 const canvas = $("#canvas");
 const ctx = canvas.getContext("2d");
 
-// Buttons
 const btnCapture = $("#btnCapture");
 const btnUpload = $("#btnUpload");
 const btnFlipCamera = $("#btnFlipCamera");
@@ -29,7 +30,6 @@ const btnCancelSettings = $("#btnCancelSettings");
 const autoToggle = $("#autoToggle");
 const fileInput = $("#fileInput");
 
-// Panels
 const resultPanel = $("#resultPanel");
 const resultContent = $("#resultContent");
 const settingsModal = $("#settingsModal");
@@ -40,19 +40,47 @@ const cameraPlaceholder = $("#cameraPlaceholder");
 const statusDot = $("#statusDot");
 const rateBadge = $("#rateBadge");
 
-// Settings inputs
 const selectModel = $("#selectModel");
 const inputInterval = $("#inputInterval");
 
 // ── Init ──
 async function init() {
   loadSettings();
-  await fetchExchangeRate();
-  await startCamera();
-  bindEvents();
   updateStatus();
+  fetchExchangeRate();
+  startCamera();
+  initOCR();
+  bindEvents();
 }
 
+// ── OCR (Tesseract.js) ──
+async function initOCR() {
+  try {
+    statusDot.classList.remove("connected");
+    state.ocrWorker = await Tesseract.createWorker("vie+eng", 1, {
+      logger: (m) => {
+        if (m.status === "recognizing text") {
+          // Could show progress here
+        }
+      },
+    });
+    state.ocrReady = true;
+    updateStatus();
+    console.log("[OCR] Tesseract ready (vie+eng)");
+  } catch (err) {
+    console.error("[OCR] Init failed:", err);
+  }
+}
+
+async function runOCR(imageSource) {
+  if (!state.ocrWorker || !state.ocrReady) {
+    throw new Error("OCR 引擎未就緒，請稍候...");
+  }
+  const result = await state.ocrWorker.recognize(imageSource);
+  return result.data.text;
+}
+
+// ── Settings ──
 function loadSettings() {
   selectModel.value = state.botName;
   inputInterval.value = state.autoInterval;
@@ -61,16 +89,18 @@ function loadSettings() {
 function saveSettings() {
   state.botName = selectModel.value;
   state.autoInterval = parseInt(inputInterval.value) || 5;
-
   localStorage.setItem("bot_name", state.botName);
   localStorage.setItem("auto_interval", String(state.autoInterval));
-
-  updateStatus();
+  // Restart auto timer if active
+  if (autoToggle.checked) {
+    toggleAuto();
+    autoToggle.checked = true;
+    toggleAuto();
+  }
 }
 
 function updateStatus() {
-  // Key is server-side now, always show connected
-  statusDot.classList.add("connected");
+  statusDot.classList.toggle("connected", state.ocrReady);
 }
 
 // ── Exchange Rate ──
@@ -83,7 +113,7 @@ async function fetchExchangeRate() {
       rateBadge.textContent = `\u{1F4B1} 1 HKD \u2248 ${state.exchangeRate.toLocaleString()} VND`;
     }
   } catch {
-    state.exchangeRate = 3200; // fallback
+    state.exchangeRate = 3200;
     rateBadge.textContent = `\u{1F4B1} 1 HKD \u2248 3,200 VND (offline)`;
   }
 }
@@ -115,13 +145,11 @@ function flipCamera() {
 
 // ── Capture ──
 function captureFrame() {
-  // If there's a preview image, use that instead
   if (imagePreview.classList.contains("active")) {
-    return getImagePreviewBase64();
+    return previewImg;
   }
 
   if (!state.stream) return null;
-
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return null;
@@ -129,46 +157,15 @@ function captureFrame() {
   canvas.width = vw;
   canvas.height = vh;
   ctx.drawImage(video, 0, 0, vw, vh);
-
-  // Return base64 without the data URL prefix
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-  return {
-    base64: dataUrl.split(",")[1],
-    mimeType: "image/jpeg",
-  };
+  return canvas;
 }
 
-function getImagePreviewBase64() {
-  const img = previewImg;
-  const tempCanvas = document.createElement("canvas");
-  const maxDim = 1920;
-  let w = img.naturalWidth;
-  let h = img.naturalHeight;
-
-  if (w > maxDim || h > maxDim) {
-    const ratio = Math.min(maxDim / w, maxDim / h);
-    w = Math.round(w * ratio);
-    h = Math.round(h * ratio);
-  }
-
-  tempCanvas.width = w;
-  tempCanvas.height = h;
-  const tempCtx = tempCanvas.getContext("2d");
-  tempCtx.drawImage(img, 0, 0, w, h);
-
-  const dataUrl = tempCanvas.toDataURL("image/jpeg", 0.85);
-  return {
-    base64: dataUrl.split(",")[1],
-    mimeType: "image/jpeg",
-  };
-}
-
-// ── Translate ──
+// ── Translate Pipeline: OCR → Poe API ──
 async function translate() {
   if (state.isTranslating) return;
 
-  const imageData = captureFrame();
-  if (!imageData) {
+  const imageSource = captureFrame();
+  if (!imageSource) {
     showResult('<div class="error-msg">無法擷取畫面，請確認相機已開啟或已上傳圖片</div>');
     return;
   }
@@ -176,15 +173,26 @@ async function translate() {
   state.isTranslating = true;
   btnCapture.classList.add("loading");
   scanOverlay.classList.add("active");
-  showResult('<div class="loading-indicator">翻譯中<span class="dots"></span></div>');
+  showResult('<div class="loading-indicator">辨識文字中<span class="dots"></span></div>');
 
   try {
+    // Step 1: OCR
+    const ocrText = await runOCR(imageSource);
+    console.log("[OCR] Extracted:", ocrText.slice(0, 200));
+
+    if (!ocrText.trim()) {
+      showResult('<div class="no-text">未偵測到文字<br><span style="font-size:12px;opacity:0.6">請對準有文字的地方再試</span></div>');
+      return;
+    }
+
+    showResult('<div class="loading-indicator">翻譯中<span class="dots"></span></div>');
+
+    // Step 2: Send to Poe for translation
     const res = await fetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        image: imageData.base64,
-        mimeType: imageData.mimeType,
+        text: ocrText,
         botName: state.botName,
         exchangeRate: state.exchangeRate || 3200,
       }),
@@ -201,7 +209,7 @@ async function translate() {
       showResult('<div class="no-text">未收到翻譯結果</div>');
     }
   } catch (err) {
-    showResult(`<div class="error-msg">連線錯誤: ${escapeHtml(err.message)}</div>`);
+    showResult(`<div class="error-msg">${escapeHtml(err.message)}</div>`);
   } finally {
     state.isTranslating = false;
     btnCapture.classList.remove("loading");
@@ -209,8 +217,8 @@ async function translate() {
   }
 }
 
+// ── Render Translation ──
 function renderTranslation(text) {
-  // Try to parse structured blocks (原文/翻譯 format)
   const blocks = parseTranslationBlocks(text);
 
   if (blocks.length > 0) {
@@ -229,7 +237,6 @@ function renderTranslation(text) {
       .join("");
     showResult(html);
   } else {
-    // Fallback: show raw text nicely formatted
     showResult(`<div class="raw-translation">${escapeHtml(text)}</div>`);
   }
 }
@@ -249,7 +256,6 @@ function parseTranslationBlocks(text) {
       continue;
     }
 
-    // Match "原文：..." or "原文: ..."
     const origMatch = trimmed.match(/^原文[：:]\s*(.+)/);
     if (origMatch) {
       if (current && current.translated) blocks.push(current);
@@ -257,7 +263,6 @@ function parseTranslationBlocks(text) {
       continue;
     }
 
-    // Match "翻譯：..." or "翻譯: ..."
     const transMatch = trimmed.match(/^翻譯[：:]\s*(.+)/);
     if (transMatch) {
       if (!current) current = { original: "", translated: "", currency: "" };
@@ -265,7 +270,6 @@ function parseTranslationBlocks(text) {
       continue;
     }
 
-    // Match currency lines (💰 ...)
     const currMatch = trimmed.match(/^💰\s*(.+)/);
     if (currMatch) {
       if (!current) current = { original: "", translated: "", currency: "" };
@@ -273,13 +277,9 @@ function parseTranslationBlocks(text) {
       continue;
     }
 
-    // If we have a current block and no match, append to translated
     if (current) {
-      if (!current.translated) {
-        current.translated = trimmed;
-      } else {
-        current.translated += "\n" + trimmed;
-      }
+      if (!current.translated) current.translated = trimmed;
+      else current.translated += "\n" + trimmed;
     }
   }
 
@@ -318,13 +318,13 @@ function handleFileSelect(e) {
   const reader = new FileReader();
   reader.onload = (ev) => {
     previewImg.src = ev.target.result;
-    imagePreview.classList.add("active");
-    video.style.display = "none";
-    // Auto-translate the uploaded image
-    setTimeout(() => translate(), 300);
+    previewImg.onload = () => {
+      imagePreview.classList.add("active");
+      video.style.display = "none";
+      setTimeout(() => translate(), 200);
+    };
   };
   reader.readAsDataURL(file);
-  // Reset input so same file can be re-selected
   fileInput.value = "";
 }
 
