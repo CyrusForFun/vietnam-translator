@@ -16,8 +16,9 @@ const $ = (sel) => document.querySelector(sel);
 const video = $("#video");
 const canvas = $("#canvas");
 const ctx = canvas.getContext("2d");
-const overlayCanvas = $("#overlayCanvas");
-const overlayCtx = overlayCanvas.getContext("2d");
+const arOverlay = $("#arOverlay");
+const frozenFrame = $("#frozenFrame");
+const arBubbles = $("#arBubbles");
 
 const btnCapture = $("#btnCapture");
 const btnUpload = $("#btnUpload");
@@ -170,18 +171,35 @@ function captureFrame() {
   return { canvas, width: cw, height: ch };
 }
 
-// ── Overlay: draw translations on top of camera ──
+// ── Overlay: HTML div-based AR translations ──
+
+// Map OCR pixel coords → display coords accounting for object-fit:cover
+function mapToDisplay(bbox, frameW, frameH) {
+  const container = $("#cameraContainer");
+  const dispW = container.clientWidth;
+  const dispH = container.clientHeight;
+
+  // object-fit: cover scaling math
+  const scaleX = dispW / frameW;
+  const scaleY = dispH / frameH;
+  const scale = Math.max(scaleX, scaleY); // cover = use larger scale
+  const offsetX = (dispW - frameW * scale) / 2;
+  const offsetY = (dispH - frameH * scale) / 2;
+
+  return {
+    left: bbox.x0 * scale + offsetX,
+    top: bbox.y0 * scale + offsetY,
+    width: (bbox.x1 - bbox.x0) * scale,
+    height: (bbox.y1 - bbox.y0) * scale,
+  };
+}
+
 function drawOverlay(frame, ocrLines, translatedLines) {
-  const { width: fw, height: fh } = frame;
+  // Freeze the current video frame as background
+  const dataUrl = frame.canvas.toDataURL("image/jpeg", 0.85);
+  frozenFrame.src = dataUrl;
+  arBubbles.innerHTML = "";
 
-  // Set overlay to match the captured frame size
-  overlayCanvas.width = fw;
-  overlayCanvas.height = fh;
-
-  // Draw the captured frame as background
-  overlayCtx.drawImage(canvas, 0, 0, fw, fh);
-
-  // Draw each translated line on top of its original position
   const lineCount = Math.min(ocrLines.length, translatedLines.length);
 
   for (let i = 0; i < lineCount; i++) {
@@ -190,54 +208,45 @@ function drawOverlay(frame, ocrLines, translatedLines) {
     if (!translated || !line.bbox) continue;
 
     const { x0, y0, x1, y1 } = line.bbox;
-    const boxW = x1 - x0;
-    const boxH = y1 - y0;
-    if (boxW < 5 || boxH < 5) continue;
+    if ((x1 - x0) < 5 || (y1 - y0) < 5) continue;
 
-    // Paint over original text with solid background
-    overlayCtx.fillStyle = "rgba(20, 20, 30, 0.88)";
-    const pad = 4;
-    overlayCtx.fillRect(x0 - pad, y0 - pad, boxW + pad * 2, boxH + pad * 2);
+    const pos = mapToDisplay(line.bbox, frame.width, frame.height);
 
-    // Pick font size to fit the box
-    let fontSize = Math.max(boxH * 0.75, 12);
-    overlayCtx.font = `bold ${fontSize}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
-    overlayCtx.fillStyle = "#FFD166";
-    overlayCtx.textBaseline = "middle";
+    const bubble = document.createElement("div");
+    bubble.className = "trans-bubble";
+    bubble.style.cssText = `left:${pos.left}px;top:${pos.top}px;width:${pos.width}px;height:${pos.height}px;animation-delay:${i * 0.04}s`;
 
-    // Shrink font if text is wider than box
-    let measured = overlayCtx.measureText(translated);
-    while (measured.width > boxW + pad * 2 && fontSize > 10) {
-      fontSize -= 1;
-      overlayCtx.font = `bold ${fontSize}px "PingFang TC", "Microsoft JhengHei", sans-serif`;
-      measured = overlayCtx.measureText(translated);
-    }
+    const text = document.createElement("span");
+    text.className = "trans-text";
+    text.textContent = translated;
+    // Auto-size font to fit the box
+    const fontSize = Math.max(Math.min(pos.height * 0.7, pos.width / translated.length * 1.6), 10);
+    text.style.fontSize = fontSize + "px";
+    bubble.appendChild(text);
 
-    // Draw centered in the box
-    const tx = x0 + (boxW - measured.width) / 2;
-    const ty = y0 + boxH / 2;
-    overlayCtx.fillText(translated, tx, ty);
-
-    // Draw currency badge if detected
+    // Currency badge
     const currencyMatch = line.text.match(/(\d[\d.,]*)\s*(?:₫|đ|d|dong|VND)\b/i);
     if (currencyMatch && state.exchangeRate) {
       const numStr = currencyMatch[1].replace(/[.,]/g, "");
       const amount = parseInt(numStr, 10);
       if (amount >= 1000) {
         const hkd = (amount / state.exchangeRate).toFixed(1);
-        const badge = `≈ ${hkd} HKD`;
-        overlayCtx.font = `bold ${Math.max(fontSize * 0.6, 10)}px sans-serif`;
-        overlayCtx.fillStyle = "#06d6a0";
-        overlayCtx.fillText(badge, x0, y1 + fontSize * 0.5);
+        const tag = document.createElement("span");
+        tag.className = "currency-tag";
+        tag.textContent = `≈ ${hkd} HKD`;
+        bubble.appendChild(tag);
       }
     }
+
+    arBubbles.appendChild(bubble);
   }
 
-  overlayCanvas.classList.add("active");
+  arOverlay.classList.add("active");
 }
 
 function hideOverlay() {
-  overlayCanvas.classList.remove("active");
+  arOverlay.classList.remove("active");
+  arBubbles.innerHTML = "";
 }
 
 // ── Translate ──
@@ -411,7 +420,7 @@ function bindEvents() {
   fileInput.addEventListener("change", handleFileSelect);
 
   // Tap overlay to dismiss it
-  overlayCanvas.addEventListener("click", hideOverlay);
+  arOverlay.addEventListener("click", hideOverlay);
 
   let touchY = 0;
   resultPanel.addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; });
